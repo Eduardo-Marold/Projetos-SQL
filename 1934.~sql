@@ -1,0 +1,2 @@
+﻿select t.* from rfa_version_control t ORDER BY ID DESC;
+

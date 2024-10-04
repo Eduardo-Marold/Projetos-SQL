@@ -1,0 +1,101 @@
+﻿-- SELECT * FROM GTT_TAX_RESULT WHERE taxname= 'STE'
+
+SELECT * FROM CFOPDEDUCTION ORDER BY operationid,cfopsuffix;
+SELECT * FROM operation;  
+SELECT * FROM company; 
+
+ALTER TABLE CFOPDEDUCTION ADD MODE_TYPE VARCHAR2(25);
+ALTER TABLE cfopdeduction ADD company NUMBER(18);
+ALTER TABLE cfopdeduction ADD CONSTRAINT FK_CFOPDEDUCTION_company_company FOREIGN KEY (company) REFERENCES company(company);
+ALTER TABLE cfopdeduction ADD CONSTRAINT UK_CFOPDEDUCTION UNIQUE (cfopsuffix,operationid,status,mode_type,company);
+
+SELECT * FROM CFOPDEDUCTION WHERE cfopsuffix = 102 AND operationid = 2 ORDER BY operationid,cfopsuffix;
+
+
+-- JOIN da INVOICE_HDR com a INVOICE_COST_DTL onde o tipo seja TSF e o cost_name = 'STE'
+-- 1433
+
+/*******---------------------------------------------------------------------------------*******/
+/* colocar no release notes que a resp. de revisão do script ´[e do cliente p/ verificar se 
+os valores de cfop vao corresponder aos valores de exit,ent e BOTH */
+
+SELECT * 
+  FROM cfopdeduction
+ WHERE cfop_suffix_description LIKE '%saída%'; 
+ 
+UPDATE cfopdeduction
+   SET mode_type = 'EXIT'
+ WHERE cfop_suffix_description LIKE '%Devolução%';
+ 
+UPDATE cfopdeduction
+   SET mode_type = 'ENT'
+ WHERE cfop_suffix_description LIKE '%Compra%';
+ 
+UPDATE cfopdeduction
+   SET mode_type = 'EXIT'
+ WHERE cfop_suffix_description LIKE '%Venda%';
+ 
+UPDATE cfopdeduction
+   SET mode_type = 'EXIT'
+ WHERE cfop_suffix_description LIKE '%saída%';
+ 
+UPDATE cfopdeduction
+   SET mode_type = 'BOTH'
+ WHERE cfop_suffix_description LIKE '%Transferência%';
+ 
+UPDATE cfopdeduction
+   SET company = 3;
+   
+ALTER TABLE gtt_tax_calc_info ADD deduced_cfop_entry VARCHAR(20);
+   
+/*******---------------------------------------------------------------------------------*******/
+ SELECT * FROM gtt_tax_calc_info; 
+ SELECT * FROM cfopdeduction; 
+ SELECT * FROM operation WHERE CODE = '014'; 
+-- CURSOR C_ITEM_DEDUCTION
+    SELECT CASE WHEN i.mode_req = 2 AND i.stateOrig =  i.stateDest THEN '5' -- Saida/Estadual
+                WHEN i.mode_req = 2 AND i.stateOrig <> i.stateDest THEN '6' -- Saida/Interestadual
+                WHEN i.mode_req = 1 AND i.stateOrig =  i.stateDest THEN '1' -- Entrada/Estadual
+                WHEN i.mode_req = 1 AND i.stateOrig <> i.stateDest THEN '2' -- Entrada/Interestadual
+           END prefixo
+         , c.cfopsuffix
+         , i.operationid
+         , i.itemid
+         , i.cfop_entry
+         , c.id cfopdeduction_id
+      FROM gtt_tax_calc_info  i,
+           cfopdeduction      c
+     WHERE c.operationid = i.operationid
+       AND c.status      = 3
+       AND c.mode_type IN ('EXIT','ENT','BOTH'); -- BOTH (152 e 409)
+
+-- CURSOR C_CFOP_FILTER       
+       SELECT a.id, a.value, a.operator
+         , c.id cfopdeductionid, c.cfopsuffix, c.operationid
+         , k.table_info, k.column_info, k.use_name, k.name, k.extra_validation
+      FROM deductionattribute a
+         , cfopdeduction      c
+         , deductionkey       k
+     WHERE a.cfopdeductionid = c.id
+       AND a.deductionkeyid  = k.id
+       AND c.id              = P_id;
+       
+-- CURSOR C_CFOP_AUX
+SELECT itemid
+         , MAX(qtd_filtros) max_qtd_filtros
+      FROM (SELECT itemid
+                 , cfop
+                 , cfop_deduction_id
+                 , COUNT(1) QTD_FILTROS
+              FROM gtt_cfop_deduction_aux
+             GROUP BY itemid, cfop, cfop_deduction_id)
+     GROUP BY itemid;
+     
+SELECT * FROM gtt_cfop_deduction_aux; 
+SELECT to_number(deduced_cfop) - 4000 FROM gtt_tax_calc_info; 
+SELECT * FROM gtt_tax_calc_info; 
+
+-- duvida cfop 6152 só para STE?
+
+
+

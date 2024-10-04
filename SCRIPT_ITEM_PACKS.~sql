@@ -1,0 +1,241 @@
+﻿DECLARE
+
+  L_error_message CLOB;
+  item VARCHAR2(4000);
+  L_invoice_type  INVOICE_HDR.INVOICE_TYPE%TYPE;
+  L_task          TASK.TASK%TYPE;
+  P36_INVOICE_AUX INVOICE_HDR.INVOICE%TYPE; 
+  P36_INV_COMPANY COMPANY.COMPANY%TYPE := 3; 
+  P36_CREATE_USER APP_USER.APP_USER%TYPE := 1; 
+  P36_INV_STATUS  INVOICE_HDR.INV_STATUS%TYPE; 
+  
+-- CURSOR PARA NOTAS COM ITEM PACK
+
+ CURSOR item_pack IS 
+   SELECT DISTINCT hdr.invoice      invoice
+                  ,hdr.inv_status   inv_status
+                  ,hdr.invoice_type invoice_type
+                  ,i.item          item
+     FROM invoice_hdr       hdr
+         ,invoice_dtl       d
+         ,item              i
+         ,rms19.item_master im
+    WHERE invoice_type IN ('TSF', 'RNF', 'STOCK', 'RTV')
+      AND inv_status IN ('TE')
+      AND invoice_subtype = 'EXIT'
+      AND hdr.create_datetime <= SYSDATE - 27
+      AND d.invoice = hdr.invoice
+      AND i.item = d.item
+      AND i.item_ref = im.item
+      AND im.pack_ind = 'Y'
+      AND invoice_type = 'RNF' -----------------
+      AND hdr.invoice IN (4891,4018) -----------
+      ORDER BY hdr.invoice;
+                          
+   R_get_item_pack item_pack%ROWTYPE;
+   
+ CURSOR item_line_no IS 
+   SELECT DISTINCT hdr.invoice      invoice
+                  ,i.item           item
+     FROM invoice_hdr       hdr
+         ,invoice_dtl       d
+         ,item              i
+         ,rms19.item_master im
+    WHERE invoice_type IN ('TSF', 'RNF', 'STOCK', 'RTV')
+      AND inv_status IN ('TE')
+      AND invoice_subtype = 'EXIT'
+      AND hdr.create_datetime <= SYSDATE - 27
+      AND d.invoice = hdr.invoice
+      AND i.item = d.item
+      AND i.item_ref = im.item
+      AND im.pack_ind = 'N'
+      AND invoice_type = 'RNF'
+      AND hdr.invoice IN (4891,4018)
+      ORDER BY hdr.invoice;
+   
+   R_get_item_line_no item_line_no%ROWTYPE;
+   
+  cursor C_RESET_RTV is
+     select 'Y'
+       from invoice_hdr h,
+            invoice_dtl d
+      where h.invoice      = P36_INVOICE_AUX -- INVOICE
+        and h.invoice      = d.invoice
+        and h.invoice_type = 'RTV'
+        and d.invoice_parent is NULL
+        and ROWNUM         = 1;
+
+  L_process_rtv_ref VARCHAR2(1) := 'Y';
+  
+  cursor C_CHECK_INVOICE is
+     select hdr.invoice invoice, hdr.inv_status inv_status ,hdr.INVOICE_TYPE INVOICE_TYPE
+       from invoice_hdr hdr
+      where INVOICE_TYPE IN ('TSF','RNF','STOCK','RTV')
+        AND inv_status IN ('TE','NE')
+        AND invoice_subtype = 'EXIT'
+        and hdr.create_datetime <= sysdate -27
+        and hdr.invoice not in
+            (SELECT distinct h.invoice FROM invoice_hdr h, invoice_dtl d, item i, rms19.item_master im
+            where inv_status = 'TE'
+            and d.invoice = h.invoice
+            and i.item = d.item
+            and i.item_ref = im.item
+            and invoice_type = 'STOCK'
+            and im.pack_ind = 'Y'
+            and hdr.invoice = h.invoice)
+            AND INVOICE IN (4891,4018); -- ALTERAR A INVOICE OU SELECIONAR OS STATUS E TIPOS QUE PRECISA
+        
+        R_get_invoice_info C_CHECK_INVOICE%ROWTYPE;
+
+BEGIN
+   
+ DBMS_OUTPUT.PUT_LINE('REGISTROS DELETADOS:'); 
+ 
+   open  item_pack;
+     LOOP
+     fetch item_pack 
+      INTO R_get_item_pack; 
+      EXIT WHEN item_pack%NOTFOUND;
+
+      DBMS_OUTPUT.PUT_LINE(R_get_item_pack.item || ' ' || 'Invoice: ' || R_get_item_pack.invoice); 
+       
+       DELETE invoice_dtl d
+        WHERE d.invoice = R_get_item_pack.invoice
+          AND d.item = R_get_item_pack.item;
+       
+      end LOOP;
+      
+      DBMS_OUTPUT.PUT_LINE('SAIU DO ITEM.PACK'); 
+      
+   close item_pack;
+  
+    --COMMIT;
+  
+  For r in (Select t.*, row_number() over (partition by invoice order by item) seqno
+  From invoice_dtl t
+  Order by invoice, invoice_line) 
+  loop
+   Update invoice_dtl
+      set line_no = r.seqno
+    where invoice = r.invoice
+      and item = r.item
+      AND EXISTS (SELECT DISTINCT hdr.invoice invoice
+                                 ,i.item      item
+                                  FROM invoice_hdr   hdr
+                                 ,invoice_dtl       d
+                                 ,item              i
+                                 ,rms19.item_master im
+                                  WHERE invoice_type IN ('TSF', 'RNF', 'STOCK', 'RTV')
+                                    AND inv_status IN ('TE')
+                                    AND invoice_subtype = 'EXIT'
+                                    AND hdr.create_datetime <= SYSDATE - 27
+                                    AND d.invoice = hdr.invoice
+                                    AND i.item = d.item
+                                    AND i.item_ref = im.item
+                                    AND invoice_type = 'RNF' ---------------
+                                    AND hdr.invoice IN (4891,4018)); -------
+  End loop;
+
+  --COMMIT;
+
+
+
+-- Chamada Reiniciar
+   
+   open  item_line_no;
+     LOOP
+     fetch item_line_no 
+      INTO R_get_item_line_no; 
+      EXIT WHEN item_line_no%NOTFOUND;
+
+    if DYNAMIC_PROCESS_SQL.CALL_PROCESS(L_error_message               ,
+                                        R_get_item_line_no.invoice    , --INVOICE_B
+                                        'PROCESS_INVOICE_RESET_STATUS',
+                                        3                             , --P10_RN_COMPANY
+                                        1) = FALSE THEN                 --P10_RN_USER
+        DBMS_OUTPUT.PUT_LINE('Ocorreu um erro no reprocessamento da nota. Verifique o LOG de erros.');
+    end if;
+    
+    end LOOP;
+  close item_line_no;
+  
+  BEGIN 
+  
+  open  C_CHECK_INVOICE;
+  LOOP
+  fetch C_CHECK_INVOICE 
+   INTO R_get_invoice_info; 
+   EXIT WHEN C_CHECK_INVOICE%NOTFOUND;
+
+  if R_get_invoice_info.inv_status IN ('CDE') then
+
+    if DYNAMIC_PROCESS_SQL.CALL_PROCESS(L_error_message      ,
+                                        R_get_invoice_info.invoice     ,                  -- INVOICE
+                                        'SUBSCRIBE_REQUEST_DISPATCH',
+                                        P36_INV_COMPANY        ,               -- COMPANY   
+                                        P36_CREATE_USER     ,                  -- APP USER
+                                        'VALIDATE_CORE_DISPATCH_INVOICE_DTL',
+                                        'TASK') = FALSE then
+      select inv_status 
+        into R_get_invoice_info.inv_status 
+        from invoice_hdr 
+       where invoice = R_get_invoice_info.invoice; -- INVOICE
+      
+      --COMMIT;
+
+      if L_error_message is NOT NULL THEN
+         DBMS_OUTPUT.PUT_LINE(L_error_message); 
+      end if;
+    end if;   
+  end if;
+
+  open  C_RESET_RTV;
+  fetch C_RESET_RTV into L_process_rtv_ref;
+  if C_RESET_RTV%FOUND then
+    L_process_rtv_ref := 'Y';
+  else
+    L_process_rtv_ref := 'N';
+  end if;
+  close C_RESET_RTV;
+
+  if R_get_invoice_info.inv_status IN ('W','CHE','CHV','WRF','NE','TAR','TCF','TE','CDV') and L_process_rtv_ref = 'Y' and R_get_invoice_info.INVOICE_TYPE = 'RTV' then
+  
+  L_task := 'PROCESS_CORE_INVOICE_LINK_REFERENCES';
+
+  end if;
+
+  if R_get_invoice_info.inv_status IN ('W','CHE','CHV','WRF','NE','TAR','TCF','TE','CDV') and L_process_rtv_ref = 'N' and R_get_invoice_info.INVOICE_TYPE = 'RTV' then
+  
+    L_task := 'PROCESS_CORE_INVOICE_NFE_VOLUME';
+
+  end if;
+  
+  if R_get_invoice_info.inv_status IN ('W','CHE','CHV','WRF','NE','TAR','TCF','TE','CDV') and R_get_invoice_info.INVOICE_TYPE <> 'RTV' then
+  
+    L_task := 'PROCESS_CORE_INVOICE_SET_FISCAL_GROUP';
+ 
+  end if;
+  
+  if DYNAMIC_PROCESS_SQL.CALL_PROCESS(L_error_message      ,
+                                      R_get_invoice_info.invoice     ,
+                                      'SUBSCRIBE_REQUEST_DISPATCH',
+                                      P36_INV_COMPANY     ,
+                                      P36_CREATE_USER     ,
+                                      L_task               ,
+                                      'TASK') = FALSE THEN
+                                      
+
+    if L_error_message is NOT NULL then
+      DBMS_OUTPUT.PUT_LINE(L_error_message); 
+    end if;
+  
+  end if;
+  end LOOP;
+  close C_CHECK_INVOICE;
+  
+  --COMMIT;
+
+  
+end;
+
+END;
